@@ -6,13 +6,15 @@ References:
 """
 
 from __future__ import annotations
-from collections import deque
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
+from functools import reduce
 from itertools import filterfalse
+from operator import ior
 from pprint import pprint
 
-State = frozenset[str] | str
+State = frozenset[str] | set[str] | str
 
 LAMBDA = ""  # Represents lambda transition in an NFA.
 
@@ -37,104 +39,76 @@ class DFA:
 
 
 class NFA(DFA):
-    def powerset_construct(self) -> DFA:
-        """Powerset construction of a DFA from an NFA.
-
-        The following code is 100% my own and took a while to figure out how to implement.
-        This is still very much untested, so use at your own risk!
-        """
-        # The code below is going to be refactored and have more comments
-        # that give a better explanation as to the process of powerset
-        # construction from an NFA to a DFA.
-
-        # Get all lambda transitions from the NFA.
+    def lambda_trans(self) -> dict[State, State]:
+        """Returns all lambda transitions in the form of state pairs."""
         lambda_trans = {}
         for state, edges in self.transfunc.items():
             for letter in filterfalse(None, edges):
                 lambda_trans[state] = edges[letter]
-        visited = set()
+        return lambda_trans
+
+    def powerset_construct(self) -> DFA:
+        """Powerset construction of a DFA from an NFA.
+
+        The following code is 100% my own and took a while to figure
+        out how to implement. This is still very much untested,
+        so use at your own risk!
+        """
+        lambda_trans = self.lambda_trans()
+
+        def reachable(state_set, start):
+            state_set = set(state_set)
+            # Initialize a set to keep track of visited
+            # states to avoid lambda transition cycles.
+            seen = set()
+            state = start
+            while state in lambda_trans:
+                if state in seen:
+                    break
+                seen.add(state)
+                state = lambda_trans[state]
+                state_set.add(state)
+            return state_set
+
         init = self.initial
-        new_state = frozenset({init})
-        new_trans = {}
+        new_state = reachable({init}, init)  # type: ignore
+        init = new_state
+        visited = set()
         queue = deque()
+        new_trans = {}
         first = True
+
         while first or queue:
-            # This part is necessary since the initial state is processed
-            # differently from later states in the powerset construction
-            # process.
             if first:
-                state = init
-                seen = set()
-                while state in lambda_trans:
-                    if state in seen:
-                        break
-                    seen.add(state)
-                    state = lambda_trans[state]
-                    new_state |= {state}
                 queue.appendleft(new_state)
-                init = new_state
                 first = False
             else:
-                new_state = queue.pop()
-                if new_state in visited:
+                if (new_state := queue.pop()) in visited:
                     continue
             sym_map = {}
             for sym in self.alphabet:
-                sym_state = frozenset()
+                sym_state = set()
                 for state in new_state:
                     trans = self.transfunc[state].get(sym)
                     if trans is None:
                         continue
                     if isinstance(trans, str):
-                        # Check if any other "sub-states" are reachable using lambda transitions.
-                        if trans in lambda_trans:
-                            s = trans
-                            trans = frozenset({trans})
-                            seen = set()
-                            while s in lambda_trans:
-                                if s in seen:
-                                    break
-                                seen.add(s)
-                                s = lambda_trans[s]
-                                trans |= {s}
-                    else:
-                        # Check if any other "sub-states" are reachable using lambda transitions
-                        # for each state in the trans set.
-                        for s in trans:
-                            if s in lambda_trans:
-                                r = s
-                                seen = set()
-                                while r in lambda_trans:
-                                    if r in seen:
-                                        break
-                                    seen.add(r)
-                                    r = lambda_trans[r]
-                                    trans |= {r}
-                    sym_state |= {trans} if isinstance(trans, str) else trans
+                        trans = {trans}
+                    reduce(ior, (reachable(trans, s) for s in trans), sym_state)  # type: ignore
                     for s in sym_state:
-                        r = s
-                        seen = set()
-                        while r in lambda_trans:
-                            if r in seen:
-                                break
-                            seen.add(r)
-                            r = lambda_trans[r]
-                            sym_state |= {r}
+                        sym_state = reachable(sym_state, s)
                 sym_map[sym] = sym_state
+            new_state = frozenset(new_state)  # Make the new state hashable.
             new_trans[new_state] = sym_map
-            for sym in self.alphabet:
-                queue.appendleft(new_trans[new_state][sym])
+            queue.extendleft(new_trans[new_state][sym] for sym in self.alphabet)
             visited.add(new_state)
         ret = DFA(
-            self.states.copy(),
+            set(new_trans),
             self.alphabet.copy(),
             new_trans,
-            init,  # type: ignore
-            accepting=set(),
+            init,
+            {state for state in new_trans if state & self.accepting},
         )
-        for state in new_trans:
-            if state & self.accepting:
-                ret.accepting.add(state)
         return ret
 
     to_dfa = powerset_construct
@@ -147,14 +121,14 @@ class NFA(DFA):
         return self.powerset_construct().check(string)
 
 
-if __name__ == "__main__":
+def main() -> None:
     nfas = [
         NFA(
             states={"q0", "q1", "q2", "q3"},
             alphabet={"0", "1"},
             transfunc={
                 "q0": {"": "q2", "0": "q1"},
-                "q1": {"1": frozenset({"q1", "q3"})},
+                "q1": {"1": {"q1", "q3"}},
                 "q2": {"": "q1", "0": "q3"},
                 "q3": {"0": "q2"},
             },
@@ -166,8 +140,8 @@ if __name__ == "__main__":
             alphabet={"a", "b"},
             transfunc={
                 "q0": {"": "q1"},
-                "q1": {"a": frozenset({"q1", "q2"}), "b": "q2"},
-                "q2": {"a": frozenset({"q0", "q2"}), "b": "q3"},
+                "q1": {"a": {"q1", "q2"}, "b": "q2"},
+                "q2": {"a": {"q0", "q2"}, "b": "q3"},
                 "q3": {"b": "q1"},
             },
             initial="q0",
@@ -178,7 +152,7 @@ if __name__ == "__main__":
             alphabet={"a", "b"},
             transfunc={
                 "q0": {"": "q2", "b": "q1"},
-                "q1": {"a": frozenset({"q1", "q2"}), "b": "q2"},
+                "q1": {"a": {"q1", "q2"}, "b": "q2"},
                 "q2": {"a": "q0"},
             },
             initial="q0",
@@ -187,5 +161,8 @@ if __name__ == "__main__":
     ]
     for nfa in nfas:
         dfa = nfa.to_dfa()
-        pprint(dfa, width=100, compact=True)
-        print()
+        pprint(dfa)
+
+
+if __name__ == "__main__":
+    main()

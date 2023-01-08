@@ -8,26 +8,29 @@ References:
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
-from functools import reduce
+from dataclasses import dataclass
 from itertools import filterfalse
-from operator import ior
 from pprint import pprint
+from typing import Generic, TypeVar
 
-State = frozenset[str] | set[str] | str
 
+T = TypeVar("T")
 LAMBDA = ""  # Represents lambda transition in an NFA.
 
 
-@dataclass
-class DFA:
-    states: set[State]
-    alphabet: set[str]
-    transfunc: dict[State, dict[str, State]]
-    initial: State
-    accepting: set[State]
+class Language:
+    ...
 
-    def check(self, string: str) -> list[State]:
+
+@dataclass
+class DFA(Generic[T]):
+    states: set[T]
+    alphabet: set[str]
+    transfunc: dict[T, dict[str, T]]
+    initial: T
+    accepting: set[T]
+
+    def check(self, string: str) -> list[T]:
         curr = self.initial
         path = [curr]
         for char in string:
@@ -39,7 +42,7 @@ class DFA:
 
 
 class NFA(DFA):
-    def lambda_trans(self) -> dict[State, State]:
+    def lambda_trans(self) -> dict[T, T]:
         """Returns all lambda transitions in the form of state pairs."""
         lambda_trans = {}
         for state, edges in self.transfunc.items():
@@ -56,51 +59,46 @@ class NFA(DFA):
         """
         lambda_trans = self.lambda_trans()
 
-        def reachable(state_set, start):
-            state_set = set(state_set)
-            # Initialize a set to keep track of visited
-            # states to avoid lambda transition cycles.
-            seen = set()
-            state = start
-            while state in lambda_trans:
-                if state in seen:
-                    break
-                seen.add(state)
-                state = lambda_trans[state]
-                state_set.add(state)
-            return state_set
+        def reachable(states):
+            ret = set(states)
+            for state in states:
+                # Initialize a set to keep track of visited
+                # states to avoid lambda transition cycles.
+                seen = set()
+                while state in lambda_trans:
+                    if state in seen:
+                        break
+                    seen.add(state)
+                    state = lambda_trans[state]
+                    ret.add(state)
+            return ret
 
-        init = self.initial
-        new_state = reachable({init}, init)  # type: ignore
+        new_state = reachable({self.initial})  # type: ignore
         init = new_state
+        queue = deque([init])
         visited = set()
-        queue = deque()
         new_trans = {}
         first = True
-
-        while first or queue:
+        while queue:
             if first:
-                queue.appendleft(new_state)
                 first = False
-            else:
-                if (new_state := queue.pop()) in visited:
-                    continue
+            elif (new_state := queue.pop()) in visited:
+                continue
             sym_map = {}
             for sym in self.alphabet:
                 sym_state = set()
-                for state in new_state:
-                    trans = self.transfunc[state].get(sym)
+                for k in new_state:
+                    trans = self.transfunc[k].get(sym)
                     if trans is None:
                         continue
-                    if isinstance(trans, str):
+                    if not isinstance(trans, set):
                         trans = {trans}
-                    reduce(ior, (reachable(trans, s) for s in trans), sym_state)  # type: ignore
-                    for s in sym_state:
-                        sym_state = reachable(sym_state, s)
-                sym_map[sym] = sym_state
+                    for state in (trans, sym_state):
+                        sym_state |= reachable(state)
+                sym_map[sym] = set(sym_state)
             new_state = frozenset(new_state)  # Make the new state hashable.
             new_trans[new_state] = sym_map
-            queue.extendleft(new_trans[new_state][sym] for sym in self.alphabet)
+            queue.extendleft(map(new_trans[new_state].get, self.alphabet))
             visited.add(new_state)
         ret = DFA(
             set(new_trans),
@@ -115,25 +113,25 @@ class NFA(DFA):
 
     @classmethod
     def union(cls, *dfas: DFA) -> DFA:
-        ...  # To be implemented!
+        ...  # To be implemented.
 
-    def check(self, string: str) -> list[State]:
+    def check(self, string: str) -> list[T]:  # type: ignore
         return self.powerset_construct().check(string)
 
 
 def main() -> None:
     nfas = [
         NFA(
-            states={"q0", "q1", "q2", "q3"},
+            states={1, 2, 3, 4},
             alphabet={"0", "1"},
             transfunc={
-                "q0": {"": "q2", "0": "q1"},
-                "q1": {"1": {"q1", "q3"}},
-                "q2": {"": "q1", "0": "q3"},
-                "q3": {"0": "q2"},
+                1: {"": 3, "0": 2},
+                2: {"1": {2, 4}},
+                3: {"": 2, "0": 4},
+                4: {"0": 3},
             },
-            initial="q0",
-            accepting={"q2", "q3"},
+            initial=1,
+            accepting={3, 4},
         ),
         NFA(
             states={"q0", "q1", "q2", "q3"},
